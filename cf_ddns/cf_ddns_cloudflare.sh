@@ -88,10 +88,35 @@ elif [ "$IP_ADDR" = "ipv6" ] ; then
   #开始优选IPv6
   $CloudflareST $CFST_URL_R -t $CFST_T -n $CFST_N -dn $CFST_DN -tl $CFST_TL -tll $CFST_TLL -sl $CFST_SL -p $CFST_P -tlr $CFST_TLR $CFST_STM -f ./cf_ddns/ipv6.txt -o ./cf_ddns/result.csv
 else
+  #写入NOWIP
+  NOWIP=$(head -1 nowip_hosts.txt)
   #开始优选IPv4
   $CloudflareST $CFST_URL_R -t $CFST_T -n $CFST_N -dn $CFST_DN -tl $CFST_TL -tll $CFST_TLL -sl $CFST_SL -p $CFST_P -tlr $CFST_TLR $CFST_STM -f ./cf_ddns/ip.txt -o ./cf_ddns/result.csv
 fi
 echo "测速完毕";
+
+#替换mosdnsCF反代IP
+BESTIP=$(sed -n "2,1p" ./cf_ddns/result.csv | awk -F, '{print $1}')
+if [[ -z "${BESTIP}" ]]; then
+	echo "CloudflareST 测速结果 IP 数量为 0，重启科学服务并跳过下面步骤..."
+     /etc/init.d/$CLIEN restart;
+     echo "已重启$CLIEN";
+     exit 0
+fi
+echo ${BESTIP} > nowip_hosts.txt
+echo -e "\n旧 IP 为 ${NOWIP}\n新 IP 为 ${BESTIP}\n"
+
+echo "开始备份 mosdns 文件（hosts_backup）..."
+\cp -f /etc/mosdns/config_custom.yaml /etc/mosdns/config_custom.bak
+
+echo -e "开始替换mosdns..."
+sed -i 's/'${NOWIP}'/'${BESTIP}'/g' /etc/mosdns/config_custom.yaml
+echo -e "完成..."
+
+echo -e "开始重启mosdns..."
+/etc/init.d/mosdns restart
+sleep 3s;
+#mosdns替换完毕
 
 #判断是否重启科学服务
 if [ "$pause" = "false" ] ; then

@@ -1,0 +1,288 @@
+log:
+  level: info
+  file: "/tmp/mosdns.log"
+
+api:
+  http: "0.0.0.0:9091"
+
+include: []
+
+plugins:
+  # 国内域名
+  - tag: geosite_cn
+    type: domain_set
+    args:
+      files:
+        - "/var/mosdns/geosite_cn.txt"
+
+  # 国内 IP
+  - tag: geoip_cn
+    type: ip_set
+    args:
+      files:
+        - "/var/mosdns/geoip_cn.txt"
+
+  # 国外域名
+  - tag: geosite_no_cn
+    type: domain_set
+    args:
+      files:
+        - "/var/mosdns/geosite_geolocation-!cn.txt"
+
+  # 白名单本地解析
+  - tag: whitelist
+    type: domain_set
+    args:
+      files:
+        - "/etc/mosdns/rule/whitelist.txt"
+
+  - tag: blocklist
+    type: domain_set
+    args:
+      files:
+        - "/etc/mosdns/rule/blocklist.txt"
+
+  - tag: greylist
+    type: domain_set
+    args:
+      files:
+        - "/etc/mosdns/rule/greylist.txt"
+
+  - tag: ddnslist
+    type: domain_set
+    args:
+      files:
+        - "/etc/mosdns/rule/ddnslist.txt"
+
+  # hosts
+  - tag: hosts
+    type: hosts
+    args:
+      files:
+        - "/etc/mosdns/rule/hosts.txt"
+
+  - tag: redirect
+    type: redirect
+    args:
+      files:
+        - "/etc/mosdns/rule/redirect.txt"
+
+  - tag: local_ptr
+    type: domain_set
+    args:
+      files:
+        - "/etc/mosdns/rule/local-ptr.txt"
+
+  # 缓存
+  - tag: lazy_cache
+    type: cache
+    args:
+      size: 8000
+      lazy_cache_ttl: 86400
+      dump_file: /etc/mosdns/cache.dump
+      dump_interval: 3600
+
+  # cloudflare
+  - tag: query_cf
+    type: forward
+    args:
+      concurrent: 2
+      upstreams:
+        - addr: 1.1.1.1
+        - addr: 8.8.8.8
+
+  # cloudflare
+  - tag: cf_ip
+    type: ip_set
+    args:
+      files:
+        - "/overlay/sped/cf_ip.txt"
+
+  - tag: query_is_cloudflare_cdn
+    type: sequence
+    args:
+      - exec: $query_cf
+      - matches: resp_ip $cf_ip
+        exec: black_hole  162.159.143.86 # 自行修改为最优 IP
+
+  # 转发至本地服务器
+  - tag: forward_local
+    type: forward
+    args:
+      concurrent: 1
+      upstreams:
+        - addr: "https://dns.alidns.com/dns-query"
+          bootstrap: 119.29.29.29
+          enable_pipeline: false
+          max_conns: 2
+          insecure_skip_verify: false
+          idle_timeout: 30
+        - addr: "https://doh.pub/dns-query"
+          bootstrap: 119.29.29.29
+          enable_pipeline: false
+          max_conns: 2
+          insecure_skip_verify: false
+          idle_timeout: 30
+
+  # 转发至远程服务器
+  - tag: forward_remote
+    type: forward
+    args:
+      concurrent: 1
+      upstreams:
+        - addr: "127.0.0.1:7874"
+          bootstrap: 119.29.29.29
+          enable_pipeline: false
+          max_conns: 2
+          insecure_skip_verify: false
+          idle_timeout: 30
+          enable_http3: false
+
+  - tag: modify_ttl
+    type: sequence
+    args:
+      - exec: ttl 600-3600
+
+  - tag: modify_ddns_ttl
+    type: sequence
+    args:
+      - exec: ttl 5-5
+
+  # 国内解析
+  - tag: local_sequence
+    type: sequence
+    args:
+      - exec: $forward_local
+
+  # 国外解析
+  - tag: remote_sequence
+    type: sequence
+    args:
+      - exec: prefer_ipv4
+      - exec: ecs 54.255.53.0/24
+      - exec: $forward_remote
+
+  # 有响应终止返回
+  - tag: has_resp_sequence
+    type: sequence
+    args:
+      - matches: qname $ddnslist
+        exec: $modify_ddns_ttl
+      - matches: "!qname $ddnslist"
+        exec: $modify_ttl
+      - matches: has_resp
+        exec: accept
+
+  # fallback 用本地服务器 sequence
+  # 返回非国内 ip 则 drop_resp
+  - tag: query_is_local_ip
+    type: sequence
+    args:
+      - exec: $local_sequence
+      - matches: "!resp_ip $geoip_cn"
+        exec: drop_resp
+
+  # fallback 用远程服务器 sequence
+  - tag: query_is_remote
+    type: sequence
+    args:
+      - exec: $remote_sequence
+
+  # fallback 用远程服务器 sequence
+  - tag: fallback
+    type: fallback
+    args:
+      primary: query_is_remote
+      secondary: query_is_remote
+      threshold: 500
+      always_standby: true
+
+  - tag: query_is_ddns_domain
+    type: sequence
+    args:
+      - matches: qname $ddnslist
+        exec: $local_sequence
+
+  # 查询国内域名
+  - tag: query_is_local_domain
+    type: sequence
+    args:
+      - matches: qname $geosite_cn
+        exec: $local_sequence
+
+  # 查询国外域名
+  - tag: query_is_no_local_domain
+    type: sequence
+    args:
+      - matches: qname $geosite_no_cn
+        exec: $remote_sequence
+
+  # 白名单本地解析
+  - tag: query_is_whitelist_domain
+    type: sequence
+    args:
+      - matches: qname $whitelist
+        exec: $local_sequence
+
+  - tag: query_is_greylist_domain
+    type: sequence
+    args:
+      - matches: qname $greylist
+        exec: $remote_sequence
+
+  - tag: query_is_reject_domain
+    type: sequence
+    args:
+      - matches: qname $blocklist
+        exec: reject 3
+      - matches:
+        - qtype 12
+        - qname $local_ptr
+        exec: reject 3
+      - matches: qtype 65
+        exec: reject 3
+
+  # 主要的运行逻辑插件
+  # sequence 插件中调用的插件 tag 必须在 sequence 前定义，
+  # 否则 sequence 找不到对应插件
+  - tag: main_sequence
+    type: sequence
+    args:
+      - exec: $hosts
+      - exec: jump has_resp_sequence
+      - matches:
+        - "!qname $ddnslist"
+        - "!qname $blocklist"
+        - "!qname $local_ptr"
+        exec: $lazy_cache
+      - exec: $redirect
+      - exec: jump has_resp_sequence
+      - exec: $query_is_ddns_domain
+      - exec: jump has_resp_sequence
+      - exec: $query_is_whitelist_domain
+      - exec: jump has_resp_sequence
+      - exec: $query_is_cloudflare_cdn
+      - exec: jump has_resp_sequence
+      - exec: $query_is_reject_domain
+      - exec: jump has_resp_sequence
+      - exec: $query_is_greylist_domain
+      - exec: jump has_resp_sequence
+      - exec: $query_is_local_domain
+      - exec: jump has_resp_sequence
+      - exec: $query_is_no_local_domain
+      - exec: jump has_resp_sequence
+      - exec: $fallback
+
+  # 启动 udp 服务器
+  - tag: udp_server
+    type: udp_server
+    args:
+      entry: main_sequence
+      listen: ":5335"
+
+  # 启动 tcp 服务器
+  - tag: tcp_server
+    type: tcp_server
+    args:
+      entry: main_sequence
+      listen: ":5335"

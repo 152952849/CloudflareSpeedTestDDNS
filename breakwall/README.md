@@ -37,7 +37,7 @@ curl -L -O https://ghproxy.com/https://raw.githubusercontent.com/hansyao/breakwa
 
 3. 修改节点信息
 
-    按照格式将[节点信息](../../main/breakwall/cf_speedtest.sh#L70)改成你自己的, 如有多个按照格式追加（每个节点单独另起一行）
+    按照格式将[节点信息](../../main/breakwall/cf_speedtest.sh#L72)改成你自己的, 如有多个按照格式追加（每个节点单独另起一行）
 
 4. 修改基本参数
 

@@ -199,34 +199,80 @@ updateDNSRecords() {
 }
 
 # Begin loop
-echo "正在更新域名，请稍等"
-x=0
+update_one_record() {
+    local subdomain=$1
+    local domain=$2
+    local ip=$3
+    local zone_id=$4
+    local x_email=$5
+    local api_key=$6
 
-# Check if hostname is an array and set subdomain and domain accordingly
-if [[ ${#hostname[@]} -gt 1 ]]; then
-    # If hostname is an array, extract the first subdomain and domain
-    CDNhostname=${hostname[0]}
-else
-    # If hostname is not an array, use the current hostname
-    CDNhostname=${hostname[$x]}
+    # 确定记录类型
+    if [[ "$ip" =~ ":" ]]; then
+        record_type="AAAA"
+    else
+        record_type="A"
+    fi
+
+    # 删除该子域名下所有现有记录
+    url="https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records"
+    params="name=${subdomain}.${domain}&type=A,AAAA"
+    response=$(curl -sm10 -X GET "$url?$params" -H "X-Auth-Email: $x_email" -H "X-Auth-Key: $api_key")
+    if [[ $(echo "$response" | jq -r '.success') == "true" ]]; then
+        records=$(echo "$response" | jq -r '.result')
+        if [[ $(echo "$records" | jq 'length') -gt 0 ]]; then
+            for record in $(echo "$records" | jq -c '.[]'); do
+                record_id=$(echo "$record" | jq -r '.id')
+                delete_url="$url/$record_id"
+                curl -s -X DELETE "$delete_url" -H "X-Auth-Email: $x_email" -H "X-Auth-Key: $api_key" > /dev/null
+            done
+        fi
+    fi
+
+    # 添加新记录
+    data=$(jq -n \
+        --arg type "$record_type" \
+        --arg name "${subdomain}.${domain}" \
+        --arg content "$ip" \
+        '{type: $type, name: $name, content: $content, ttl: 60, proxied: false}')
+    response=$(curl -s -X POST "$url" -H "X-Auth-Email: $x_email" -H "X-Auth-Key: $api_key" -H "Content-Type: application/json" -d "$data")
+    if [[ $(echo "$response" | jq -r '.success') == "true" ]]; then
+        echo "${subdomain}.${domain} 成功指向 IP $ip" | tee -a $informlog
+    else
+        echo "更新 ${subdomain}.${domain} 失败" | tee -a $informlog
+    fi
+}
+
+# 读取有效的 IP 列表（速度不为 0）
+valid_ips=()
+while IFS= read -r line; do
+    ip=$(echo "$line" | awk -F, '{print $1}')
+    speed=$(echo "$line" | awk -F, '{print $6}')
+    if [[ "$speed" != "0.00" ]]; then
+        valid_ips+=("$ip")
+    fi
+done < <(tail -n +2 ./cf_ddns/result.csv)   # 跳过 CSV 表头
+
+if [[ ${#valid_ips[@]} -eq 0 ]]; then
+    echo "错误：没有测到有效的 IP，请检查 CloudflareST 配置"
+    exit 1
 fi
 
-# Split the hostname into subdomain and domain outside the loop
-subdomain=$(echo "$CDNhostname" | cut -d '.' -f 1)
-domain=$(echo "$CDNhostname" | cut -d '.' -f 2-)
-updateDNSRecords $subdomain $domain > $informlog
+echo "共获取 ${#valid_ips[@]} 个有效 IP，准备更新 ${#hostname[@]} 个子域名"
 
-if [ "$IP_TO_HOSTS" = 1 ]; then
-  if [ ! -f "/etc/hosts.old_cfstddns_bak" ]; then
-    cp /etc/hosts /etc/hosts.old_cfstddns_bak
-    cat ./cf_ddns/hosts_new >> /etc/hosts
-  else
-    rm /etc/hosts
-    cp /etc/hosts.old_cfstddns_bak /etc/hosts
-    cat ./cf_ddns/hosts_new >> /etc/hosts
-    echo "hosts已更新"
-    echo "hosts已更新" >> $informlog
-    rm ./cf_ddns/hosts_new
-  fi
-fi
+for idx in "${!hostname[@]}"; do
+    full="${hostname[$idx]}"
+    sub=$(echo "$full" | cut -d '.' -f 1)
+    dom=$(echo "$full" | cut -d '.' -f 2-)
 
+    if [[ $idx -lt ${#valid_ips[@]} ]]; then
+        ip="${valid_ips[$idx]}"
+    else
+        # 如果 IP 数量不足，可以重复使用最后一个 IP，或者跳过
+        ip="${valid_ips[-1]}"
+        echo "警告：IP 数量不足，${full} 使用最后一个 IP $ip"
+    fi
+
+    update_one_record "$sub" "$dom" "$ip" "$zone_id" "$x_email" "$api_key"
+    sleep 1
+done

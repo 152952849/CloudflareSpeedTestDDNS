@@ -9,13 +9,26 @@
 bash start.sh
 ```
 
-## ~~[教程过旧，待更新](https://blog.vbar.fun/archives/openwrt-ding-shi-you-xuan-cloudflareip-bing-geng-xin-dao-cloudflare)~~
-~~详细使用教程请参考[详细教程](https://blog.vbar.fun/archives/openwrt-ding-shi-you-xuan-cloudflareip-bing-geng-xin-dao-cloudflare)~~
+## ~~[教程过旧，待更新](https://blog.vbar.fun/archives/openwrt%E5%AE%9A%E6%97%B6%E4%BC%98%E9%80%89cloudflareip%E5%B9%B6%E6%9B%B4%E6%96%B0%E5%88%B0dnspod)~~
+~~详细使用教程请参考[详细教程](https://blog.vbar.fun/archives/openwrt%E5%AE%9A%E6%97%B6%E4%BC%98%E9%80%89cloudflareip%E5%B9%B6%E6%9B%B4%E6%96%B0%E5%88%B0dnspod)~~
 
 ## Docker运行
 https://hub.docker.com/r/lee1080/cfstddns
 
 ## 更新日志
+
+### 20231004
+#### 优化测速指定端口判断。
+#### 优化cloudflare配置。
+#### 新增单个IP下载测速最长时间配置。
+#### 修复反代IP线路并新增一条线路。
+
+### 更早的更新日志
+<details>
+<summary><code><strong>「 点击展开 查看更早的更新日志 」</strong></code></summary>
+
+****
+
 ### V2.3
 #### 适配XIU2/CloudflareSpeedTest:v2.2.4 | 新增自定义测速地址端口支持
 #### 新增PushPlus推送。
@@ -40,6 +53,12 @@ https://hub.docker.com/r/lee1080/cfstddns
 可以在hostname中填入多个域名。使用[CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest)工具得出优选IP列表后，脚本支持依次从速度最快的ip开始DDNS，域名数量可更具自己需求填写。
 #### 优化科学上网插件重启时机
 
+
+</details>
+
+****
+
+
 ## 原理
 使用Cloudflare的API，将CloudflareSpeedTest工具优选到的最快IP，自动更新到指定域名上。
 
@@ -47,5 +66,12 @@ https://hub.docker.com/r/lee1080/cfstddns
 .tk .ml .ga .cf .gq这几个域名可能存在无法调用CloudflareAPI。
 
 ## 感谢
-感谢[XIU2](https://github.com/XIU2)给大家提供了[CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest)这么方便的优选IP的工具。
-https://github.com/XIU2/CloudflareSpeedTest
+* 感谢[XIU2](https://github.com/XIU2)给大家提供了[CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest)这么方便的优选IP的工具。 https://github.com/XIU2/CloudflareSpeedTest
+* 感谢[ip-scanner](https://github.com/ip-scanner)[cloudflare](https://github.com/ip-scanner/cloudflare)项目提供的反代地址。
+* 感谢[CF中转IP发布](https://t.me/cf_push)提供反代地址。
+
+#### 感谢以下小伙伴一起更正和完善代码
+* [Jason6111](https://github.com/Jason6111)
+* [Nigel-NI](https://github.com/Nigel-NI)
+* [linntt88](https://github.com/linntt88)
+* [stephenzwj](https://github.com/stephenzwj)

@@ -61,7 +61,7 @@ else
   echo "已停止$CLIEN";
 fi
 
-#判断是否配置测速地址 
+#判断是否配置测速地址
 if [[ "$CFST_URL" == http* ]] ; then
   CFST_URL_R="-url $CFST_URL -tp $CFST_TP ";
 else
@@ -97,42 +97,17 @@ elif [ "$IP_PR_IP" = "2" ] ; then
     echo "已更新线路2的反向代理列表"
   fi
 fi
-  
+
 if [ "$IP_PR_IP" -ne "0" ] ; then
   $CloudflareST $CFST_URL_R -t $CFST_T -n $CFST_N -dn $CFST_DN -tl $CFST_TL -dt $CFST_DT -tp $CFST_TP -sl $CFST_SL -p $CFST_P -tlr $CFST_TLR $CFST_STM -f ./cf_ddns/pr_ip.txt -o ./cf_ddns/result.csv
 elif [ "$IP_ADDR" = "ipv6" ] ; then
   #开始优选IPv6
   $CloudflareST $CFST_URL_R -t $CFST_T -n $CFST_N -dn $CFST_DN -tl $CFST_TL -dt $CFST_DT -tp $CFST_TP -tll $CFST_TLL -sl $CFST_SL -p $CFST_P -tlr $CFST_TLR $CFST_STM -f ./cf_ddns/ipv6.txt -o ./cf_ddns/result.csv
 else
-  #写入NOWIP
-  NOWIP=$(head -1 nowip_hosts.txt)
   #开始优选IPv4
   $CloudflareST $CFST_URL_R -t $CFST_T -n $CFST_N -dn $CFST_DN -tl $CFST_TL -dt $CFST_DT -tp $CFST_TP -tll $CFST_TLL -sl $CFST_SL -p $CFST_P -tlr $CFST_TLR $CFST_STM -f ./cf_ddns/ip.txt -o ./cf_ddns/result.csv
 fi
 echo "测速完毕";
-
-#替换mosdnsCF反代IP
-BESTIP=$(sed -n "2,1p" ./cf_ddns/result.csv | awk -F, '{print $1}')
-if [[ -z "${BESTIP}" ]]; then
-	echo "CloudflareST 测速结果 IP 数量为 0，重启科学服务并跳过下面步骤..."
-     /etc/init.d/$CLIEN restart;
-     echo "已重启$CLIEN";
-     exit 0
-fi
-echo ${BESTIP} > nowip_hosts.txt
-echo -e "\n旧 IP 为 ${NOWIP}\n新 IP 为 ${BESTIP}\n"
-
-echo "开始备份 mosdns 文件（hosts_backup）..."
-\cp -f /etc/mosdns/config_custom.yaml /etc/mosdns/config_custom.bak
-
-echo -e "开始替换mosdns..."
-sed -i 's/'${NOWIP}'/'${BESTIP}'/g' /etc/mosdns/config_custom.yaml
-echo -e "完成..."
-
-echo -e "开始重启mosdns..."
-/etc/init.d/mosdns restart
-sleep 3s;
-#mosdns替换完毕
 
 #判断是否重启科学服务
 if [ "$pause" = "false" ] ; then
@@ -144,66 +119,102 @@ else
   echo "等待${sleepTime}秒后开始更新DNS！"
   sleep ${sleepTime}s;
 fi
+x=0
+updateDNSRecords() {
+  subdomain=$1
+  domain=$2
+  csv_file='./cf_ddns/result.csv'
+  # Add new DNS records from results.csv
+  if [[ -f $csv_file ]]; then
+      # Delete existing DNS records
+    url="https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records"
+    params="name=${subdomain}.${domain}&type=A,AAAA"
+    response=$(curl -sm10 -X GET "$url?$params" -H "X-Auth-Email: $x_email" -H "X-Auth-Key: $api_key")
+    if [[ $(echo "$response" | jq -r '.success') == "true" ]]; then
+      records=$(echo "$response" | jq -r '.result')
+      if [[ $(echo "$records" | jq 'length') -gt 0 ]]; then
+        for record in $(echo "$records" | jq -c '.[]'); do
+          record_id=$(echo "$record" | jq -r '.id')
+          delete_url="$url/$record_id"
+          delete_response=$(curl -sm10 -X DELETE "$delete_url" -H "X-Auth-Email: $x_email" -H "X-Auth-Key: $api_key")
+          if [[ $(echo "$delete_response" | jq -r '.success') == "true" ]]; then
+            echo "成功删除DNS记录$(echo "$record" | jq -r '.name')"
+          else
+            echo "删除DNS记录失败"
+          fi
+        done
+      else
+        echo "没有找到相关DNS记录"
+      fi
+    else
+      echo "没有拿到DNS记录"
+    fi
+    # Declare an array to hold the IPs with positive speed
+    declare -a ips
 
-# 开始循环
-echo "正在更新域名，请稍后..."
+    # Assuming num is the total number of IPs in result.csv
+    num=$(awk -F, 'END {print NR-1}' ./cf_ddns/result.csv)  # Subtract 1 if there's a header line in result.csv
+
+    x=0  # Initialize counter
+    while [[ ${x} -lt ${num} ]]; do
+      ipAddr=$(sed -n "$((x + 2)),1p" ./cf_ddns/result.csv | awk -F, '{print $1}')
+      ipSpeed=$(sed -n "$((x + 2)),1p" ./cf_ddns/result.csv | awk -F, '{print $6}')
+
+      if [[ $ipSpeed == "0.00" ]]; then
+        echo "第$((x + 1))个---$ipAddr测速为0，跳过更新DNS，检查配置是否能正常测速！"
+      else
+#        echo "准备更新第$((x + 1))个---$ipAddr"
+        # Append the IP address to the ips array
+        ips+=("$ipAddr")
+      fi
+
+      x=$((x + 1))  # Increment counter
+    done
+
+    for ip in "${ips[@]}"; do
+      url="https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records"
+      if [[ "$ip" =~ ":" ]]; then
+        record_type="AAAA"
+      else
+        record_type="A"
+      fi
+      data='{
+          "type": "'"$record_type"'",
+          "name": "'"$subdomain.$domain"'",
+          "content": "'"$ip"'",
+          "ttl": 60,
+          "proxied": false
+      }'
+      response=$(curl -s -X POST "$url" -H "X-Auth-Email: $x_email" -H "X-Auth-Key: $api_key" -H "Content-Type: application/json" -d "$data")
+      if [[ $(echo "$response" | jq -r '.success') == "true" ]]; then
+        echo "${subdomain}.${domain}成功指向IP地址$ip"
+      else
+        echo "更新IP地址${ip}失败"
+      fi
+      sleep 1
+    done
+  else
+    echo "CSV文件$csv_file不存在"
+  fi
+}
+
+# Begin loop
+echo "正在更新域名，请稍等"
 x=0
 
-while [[ ${x} -lt $num ]]; do
-  CDNhostname=${hostname[$x]}
-  
-  # 获取优选后的ip地址
-  ipAddr=$(sed -n "$((x + 2)),1p" ./cf_ddns/result.csv | awk -F, '{print $1}');
-  ipSpeed=$(sed -n "$((x + 2)),1p" ./cf_ddns/result.csv | awk -F, '{print $6}');
-  if [ $ipSpeed = "0.00" ]; then
-    echo "第$((x + 1))个---$ipAddr测速为0，跳过更新DNS，检查配置是否能正常测速！";
-  else
-    if [ "$IP_TO_HOSTS" = 1 ]; then
-      echo $ipAddr $CDNhostname >> ./cf_ddns/hosts_new
-    fi
+# Check if hostname is an array and set subdomain and domain accordingly
+if [[ ${#hostname[@]} -gt 1 ]]; then
+    # If hostname is an array, extract the first subdomain and domain
+    CDNhostname=${hostname[0]}
+else
+    # If hostname is not an array, use the current hostname
+    CDNhostname=${hostname[$x]}
+fi
 
-    if [ "$IP_TO_CF" = 1 ]; then
-      echo "开始更新第$((x + 1))个---$ipAddr"
-
-      # 开始DDNS
-      if [[ $ipAddr =~ $ipv4Regex ]]; then
-        recordType="A"
-      else
-        recordType="AAAA"
-      fi
-
-      listDnsApi="https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?type=${recordType}&name=${CDNhostname}"
-      createDnsApi="https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records"
-
-      # 关闭小云朵
-      proxy="false"
-  
-      res=$(curl -s -X GET "$listDnsApi" -H "X-Auth-Email:$x_email" -H "X-Auth-Key:$api_key" -H "Content-Type:application/json")
-      recordId=$(echo "$res" | jq -r ".result[0].id")
-      recordIp=$(echo "$res" | jq -r ".result[0].content")
-  
-      if [[ $recordIp = "$ipAddr" ]]; then
-        echo "更新失败，获取最快的IP与云端相同"
-        resSuccess=false
-      elif [[ $recordId = "null" ]]; then
-        res=$(curl -s -X POST "$createDnsApi" -H "X-Auth-Email:$x_email" -H "X-Auth-Key:$api_key" -H "Content-Type:application/json" --data "{\"type\":\"$recordType\",\"name\":\"$CDNhostname\",\"content\":\"$ipAddr\",\"proxied\":$proxy}")
-        resSuccess=$(echo "$res" | jq -r ".success")
-      else
-        updateDnsApi="https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${recordId}"
-        res=$(curl -s -X PUT "$updateDnsApi"  -H "X-Auth-Email:$x_email" -H "X-Auth-Key:$api_key" -H "Content-Type:application/json" --data "{\"type\":\"$recordType\",\"name\":\"$CDNhostname\",\"content\":\"$ipAddr\",\"proxied\":$proxy}")
-        resSuccess=$(echo "$res" | jq -r ".success")
-      fi
-  
-      if [[ $resSuccess = "true" ]]; then
-        echo "$CDNhostname更新成功"
-      else
-        echo "$CDNhostname更新失败"
-      fi
-    fi
-  fi
-  x=$((x + 1))
-  sleep 3s
-done > $informlog
+# Split the hostname into subdomain and domain outside the loop
+subdomain=$(echo "$CDNhostname" | cut -d '.' -f 1)
+domain=$(echo "$CDNhostname" | cut -d '.' -f 2-)
+updateDNSRecords $subdomain $domain > $informlog
 
 if [ "$IP_TO_HOSTS" = 1 ]; then
   if [ ! -f "/etc/hosts.old_cfstddns_bak" ]; then
